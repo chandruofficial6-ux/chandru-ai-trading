@@ -203,3 +203,18 @@ if scan_df.empty:
     st.write("Scanner data load nahi hua.")
 else:
     st.dataframe(scan_df, hide_index=True, use_container_width=True)
+    # ---------- Alerts ----------
+if not scan_df.empty:
+    st.markdown("### 🚨 Alerts")
+    hot = scan_df[scan_df["RSI"] > 70]
+    cold = scan_df[scan_df["RSI"] < 30]
+    buys = scan_df[scan_df["Signal"].str.contains("BUY")]
+
+    if not hot.empty:
+        st.error("🔥 Overbought (girne ka risk): " + ", ".join(hot["Stock"]))
+    if not cold.empty:
+        st.success("🧊 Oversold (bounce ka chance): " + ", ".join(cold["Stock"]))
+    if not buys.empty:
+        st.info("🟢 BUY signal: " + ", ".join(buys["Stock"]))
+    if hot.empty and cold.empty and buys.empty:
+        st.write("Abhi koi khaas alert nahi hai.")
