@@ -337,3 +337,175 @@ else:
         st.success("Is stock mein signal ne kharid ke rakhne se behtar kaam kiya, par bhavishya mein aisa hona zaroori nahi.")
 
 st.caption("Demo dashboard. Sirf seekhne ke liye, paisa mat lagao.")
+# ---------- Nifty 50 Full Scanner ----------
+st.markdown("---")
+st.markdown("### 🌐 Nifty 50 Full Scanner (saare 50 stocks)")
+
+NIFTY50 = [
+    "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK",
+    "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BEL", "BHARTIARTL",
+    "CIPLA", "COALINDIA", "DRREDDY", "EICHERMOT", "ETERNAL",
+    "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE", "HINDALCO",
+    "HINDUNILVR", "ICICIBANK", "ITC", "INFY", "INDIGO",
+    "JSWSTEEL", "JIOFIN", "KOTAKBANK", "LT", "M&M",
+    "MARUTI", "NTPC", "NESTLEIND", "ONGC", "POWERGRID",
+    "RELIANCE", "SBILIFE", "SHRIRAMFIN", "SBIN", "SUNPHARMA",
+    "TCS", "TATACONSUM", "TATAMOTORS", "TATASTEEL", "TECHM",
+    "TITAN", "TRENT", "ULTRACEMCO", "WIPRO", "MAXHEALTH",
+]
+
+
+def analyse_one(d):
+    d = d.dropna()
+    if len(d) < 60:
+        return None
+    c = d["Close"]
+    p = float(c.iloc[-1])
+    pv = float(c.iloc[-2])
+    m20 = c.rolling(20).mean().iloc[-1]
+    m50 = c.rolling(50).mean().iloc[-1]
+    dl = c.diff()
+    g = dl.clip(lower=0).rolling(14).mean()
+    ls = (-dl.clip(upper=0)).rolling(14).mean()
+    r = float((100 - 100 / (1 + g / ls)).iloc[-1])
+    if p > m20 > m50:
+        sg = "🟢 BUY"
+    elif p < m20 < m50:
+        sg = "🔴 SELL"
+    else:
+        sg = "🟡 WAIT"
+    return {
+        "Price": round(p, 2),
+        "Change %": round((p - pv) / pv * 100, 2),
+        "RSI": round(r, 1),
+        "Signal": sg,
+    }
+
+
+@st.cache_data(ttl=600)
+def scan_nifty50(tickers):
+    syms = [t + ".NS" for t in tickers]
+    raw = yf.download(syms, period="1y", interval="1d", group_by="ticker",
+                      progress=False, auto_adjust=True, threads=True)
+    rows = []
+    for t, s in zip(tickers, syms):
+        try:
+            res = analyse_one(raw[s])
+            if res:
+                rows.append({"Stock": t, **res})
+        except Exception:
+            continue
+    return pd.DataFrame(rows)
+
+
+if st.button("🔎 Nifty 50 scan karo (20-40 second lagte hain)"):
+    with st.spinner("Saare 50 stocks check ho rahe hain..."):
+        st.session_state["n50"] = scan_nifty50(tuple(NIFTY50))
+
+n50 = st.session_state.get("n50")
+if n50 is not None:
+    if n50.empty:
+        st.warning("Data nahi aaya. Thodi der baad dobara try karo.")
+    else:
+        f1, f2 = st.columns(2)
+        sig_pick = f1.selectbox("Signal filter", ["Sab", "🟢 BUY", "🔴 SELL", "🟡 WAIT"])
+        rsi_pick = f2.selectbox("RSI filter", ["Sab", "Overbought (70+)", "Oversold (30-)", "Normal"])
+        view = n50.copy()
+        if sig_pick != "Sab":
+            view = view[view["Signal"] == sig_pick]
+        if rsi_pick == "Overbought (70+)":
+            view = view[view["RSI"] > 70]
+        elif rsi_pick == "Oversold (30-)":
+            view = view[view["RSI"] < 30]
+        elif rsi_pick == "Normal":
+            view = view[(view["RSI"] >= 30) & (view["RSI"] <= 70)]
+        st.caption(f"{len(view)} stocks dikh rahe hain (kul {len(n50)} scan hue). Column pe click karke sort kar sakte ho.")
+        st.dataframe(
+            view,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Price": st.column_config.NumberColumn("Price (₹)", format="%.2f"),
+                "Change %": st.column_config.NumberColumn("Change %", format="%+.2f%%"),
+                "RSI": st.column_config.ProgressColumn("RSI", format="%.1f", min_value=0, max_value=100),
+            },
+        )
+        t1, t2 = st.columns(2)
+        top = n50.sort_values("Change %", ascending=False).head(5)
+        bot = n50.sort_values("Change %").head(5)
+        t1.markdown("*🚀 Top 5 gainers*")
+        t1.dataframe(top[["Stock", "Change %"]], hide_index=True, use_container_width=True)
+        t2.markdown("*📉 Top 5 losers*")
+        t2.dataframe(bot[["Stock", "Change %"]], hide_index=True, use_container_width=True)
+        # ---------- Strategy Lab ----------
+st.markdown("---")
+st.markdown("### 🔬 Strategy Lab: kaun sa tareeka behtar?")
+st.caption(f"Stock: {name}. Pichle 2 saal. Brokerage/tax shamil nahi. Sirf seekhne ke liye.")
+
+
+def equity_from_pos(c, pos):
+    ret = c.pct_change().fillna(0)
+    held = pos.shift(1).fillna(0)
+    return (1 + held * ret).cumprod() * 100
+
+
+def lab_run(d):
+    c = d["Close"]
+    m20 = c.rolling(20).mean()
+    m50 = c.rolling(50).mean()
+    dl = c.diff()
+    g = dl.clip(lower=0).rolling(14).mean()
+    ls = (-dl.clip(upper=0)).rolling(14).mean()
+    rs = 100 - 100 / (1 + g / ls)
+    base = (c > m20) & (m20 > m50)
+
+    # 1) sirf MA
+    pos_ma = base.astype(int)
+    # 2) MA + RSI 70 ke neeche
+    pos_rsi = (base & (rs < 70)).astype(int)
+    # 3) MA + 2% stop loss (stop lagne ke baad naya signal aane tak bahar)
+    vals = []
+    in_trade = False
+    entry = 0.0
+    blocked = False
+    for price_, ok in zip(c.values, base.values):
+        if not ok:
+            blocked = False
+        if in_trade:
+            if (not ok) or price_ < entry * 0.98:
+                if ok:
+                    blocked = True
+                in_trade = False
+        elif ok and not blocked:
+            in_trade = True
+            entry = price_
+        vals.append(1 if in_trade else 0)
+    pos_sl = pd.Series(vals, index=c.index)
+
+    out = pd.DataFrame({
+        "Sirf MA": equity_from_pos(c, pos_ma),
+        "MA + RSI filter": equity_from_pos(c, pos_rsi),
+        "MA + 2% stop loss": equity_from_pos(c, pos_sl),
+        "Seedha kharid ke rakho": c / c.iloc[0] * 100,
+    })
+    return out
+
+
+lab_df = load_data(symbol, "2y")
+if len(lab_df) < 120:
+    st.write("Strategy Lab ke liye kam data hai.")
+else:
+    lab = lab_run(lab_df)
+    lfig = go.Figure()
+    for col_name in lab.columns:
+        lfig.add_trace(go.Scatter(x=lab.index, y=lab[col_name], name=col_name))
+    lfig.update_layout(height=420, yaxis_title="Growth (start = 100)")
+    st.plotly_chart(lfig, use_container_width=True)
+    res = pd.DataFrame({
+        "Tareeka": lab.columns,
+        "Return %": [round(lab[x].iloc[-1] - 100, 1) for x in lab.columns],
+    }).sort_values("Return %", ascending=False)
+    st.dataframe(res, hide_index=True, use_container_width=True)
+    best = res.iloc[0]
+    st.info(f"Is stock mein pichle 2 saal ka sabse achha tareeka: {best['Tareeka']} ({best['Return %']:+.1f}%). "
+            "Ye sirf purana data hai, aage aisa hone ki guarantee nahi.")
