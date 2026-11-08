@@ -507,5 +507,82 @@ else:
     }).sort_values("Return %", ascending=False)
     st.dataframe(res, hide_index=True, use_container_width=True)
     best = res.iloc[0]
-    st.info(f"Is stock mein pichle 2 saal ka sabse achha tareeka: {best['Tareeka']} ({best['Return %']:+.1f}%). "
-            "Ye sirf purana data hai, aage aisa hone ki guarantee nahi.")
+st.info(f"Sabse achha tareeka: {best['Tareeka']} ({best['Return %']:+.1f}%). Ye purana data hai, guarantee nahi.")
+
+# ---------- Paper Portfolio ----------
+st.markdown("---")
+st.markdown("### 💼 Paper Portfolio (virtual, practice ke liye)")
+st.caption("Har line mein: SYMBOL, quantity, kharid bhav. Jaise: RELIANCE, 10, 1300")
+
+pf_default = st.query_params.get("pf", "RELIANCE, 10, 1300\nTCS, 5, 2400")
+pf_text = st.text_area("Apne stocks", value=pf_default, height=120)
+if pf_text.strip():
+    st.query_params["pf"] = pf_text
+elif "pf" in st.query_params:
+    del st.query_params["pf"]
+
+
+def parse_portfolio(text):
+    rows = []
+    for line in text.splitlines():
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) != 3:
+            continue
+        try:
+            rows.append((parts[0].upper(), float(parts[1]), float(parts[2])))
+        except ValueError:
+            continue
+    return rows
+
+
+pf_rows = parse_portfolio(pf_text)
+if not pf_rows:
+    st.write("Koi sahi line nahi mili. Format: SYMBOL, quantity, kharid bhav")
+else:
+    table = []
+    for sym_, qty_, buy_ in pf_rows:
+        try:
+            ticker_ = stocks.get(sym_, sym_ + ".NS")
+            d_ = load_data(ticker_, "6mo")
+            now_ = float(d_["Close"].iloc[-1])
+        except Exception:
+            continue
+        inv_ = qty_ * buy_
+        val_ = qty_ * now_
+        table.append({
+            "Stock": sym_,
+            "Qty": qty_,
+            "Kharid": round(buy_, 2),
+            "Abhi": round(now_, 2),
+            "Lagaya (₹)": round(inv_, 0),
+            "Abhi value (₹)": round(val_, 0),
+            "Profit/Loss (₹)": round(val_ - inv_, 0),
+            "P/L %": round((val_ - inv_) / inv_ * 100, 2) if inv_ else 0.0,
+        })
+    if not table:
+        st.warning("Kisi symbol ka data nahi mila. Symbol check karo (jaise RELIANCE, TCS).")
+    else:
+        pf = pd.DataFrame(table)
+        tot_inv = pf["Lagaya (₹)"].sum()
+        tot_val = pf["Abhi value (₹)"].sum()
+        tot_pl = tot_val - tot_inv
+        p1, p2, p3 = st.columns(3)
+        p1.metric("Kul lagaya", f"₹ {tot_inv:,.0f}")
+        p2.metric("Abhi ki value", f"₹ {tot_val:,.0f}")
+        p3.metric("Kul profit/loss", f"₹ {tot_pl:,.0f}",
+                  f"{tot_pl / tot_inv * 100:+.2f}%" if tot_inv else None)
+        st.dataframe(
+            pf,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "P/L %": st.column_config.NumberColumn("P/L %", format="%+.2f%%"),
+            },
+        )
+        pie = go.Figure(go.Pie(labels=pf["Stock"], values=pf["Abhi value (₹)"], hole=0.45))
+        pie.update_layout(height=320, title="Kis stock mein kitna hissa")
+        st.plotly_chart(pie, use_container_width=True)
+        biggest = pf.sort_values("Abhi value (₹)", ascending=False).iloc[0]
+        share = biggest["Abhi value (₹)"] / tot_val * 100 if tot_val else 0
+        if share > 50:
+            st.warning(f"{biggest['Stock']} tere portfolio ka {share:.0f}% hai. Ek hi stock mein zyada paisa risky hota hai.")
