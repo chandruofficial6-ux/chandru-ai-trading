@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
+import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="Chandru AI Trading",
@@ -29,8 +30,30 @@ stocks = {
     "L&T": "LT.NS",
 }
 
+# Watchlist: apne stocks add karo
+default_w = st.query_params.get("w", "")
+extra = st.sidebar.text_input(
+    "➕ Apne stocks (NSE symbol, comma se)",
+    value=default_w,
+    placeholder="ZOMATO, TATAMOTORS",
+)
+if extra:
+    st.query_params["w"] = extra
+elif "w" in st.query_params:
+    del st.query_params["w"]
+for sym_in in extra.split(","):
+    sym_in = sym_in.strip().upper()
+    if sym_in and sym_in.replace("&", "").replace("-", "").isalnum():
+        stocks[sym_in] = sym_in + ".NS"
+
 name = st.sidebar.selectbox("Stock / Index chuno", list(stocks.keys()))
 period = st.sidebar.selectbox("Period", ["6mo", "1y", "2y"], index=1)
+auto = st.sidebar.checkbox("🔄 Auto-refresh (har 5 min)")
+if auto:
+    components.html(
+        "<script>setTimeout(function(){window.parent.location.reload();},300000);</script>",
+        height=0,
+    )
 symbol = stocks[name]
 
 
@@ -47,7 +70,7 @@ def load_data(symbol, period):
 df = load_data(symbol, period)
 
 if df.empty:
-    st.error("Data nahi mila. Internet check karo ya thodi der baad try karo.")
+    st.error("Data nahi mila. Symbol check karo ya thodi der baad try karo.")
     st.stop()
 
 df["MA20"] = df["Close"].rolling(20).mean()
@@ -157,9 +180,9 @@ st.markdown("### 🔍 Market Scanner (saare stocks ek saath)")
 
 
 @st.cache_data(ttl=300)
-def scan_all():
+def scan_all(items):
     rows = []
-    for nm, sym in stocks.items():
+    for nm, sym in items:
         try:
             d = yf.download(sym, period="1y", interval="1d",
                             progress=False, auto_adjust=True)
@@ -201,7 +224,7 @@ def scan_all():
     return pd.DataFrame(rows)
 
 
-scan_df = scan_all()
+scan_df = scan_all(tuple(stocks.items()))
 if scan_df.empty:
     st.write("Scanner data load nahi hua.")
 else:
@@ -265,4 +288,52 @@ else:
         k1.metric(a_name, f"{ra:+.1f}%", help=f"{period} ka return")
         k2.metric(b_name, f"{rb:+.1f}%", help=f"{period} ka return")
 
-st.caption("Demo dashboard. Seekhne ke liye hai, isse paisa mat lagao.")
+# ---------- Backtest ----------
+st.markdown("---")
+st.markdown("### 🧪 Backtest: MA signal pichle 2 saal mein kitna chala?")
+st.caption(f"Stock: {name}. Rule: Price > MA20 > MA50 ho to kharido, warna cash. Brokerage/tax shamil nahi.")
+
+
+def run_backtest(d):
+    c = d["Close"]
+    ma20_ = c.rolling(20).mean()
+    ma50_ = c.rolling(50).mean()
+    pos = ((c > ma20_) & (ma20_ > ma50_)).astype(int)
+    ret = c.pct_change().fillna(0)
+    held = pos.shift(1).fillna(0)
+    strat = held * ret
+    eq = (1 + strat).cumprod() * 100
+    bh = (1 + ret).cumprod() * 100
+    grp = (held != held.shift()).cumsum()
+    trades = []
+    for g in grp[held == 1].unique():
+        seg = strat[(grp == g) & (held == 1)]
+        trades.append((1 + seg).prod() - 1)
+    return eq, bh, trades
+
+
+bt_df = load_data(symbol, "2y")
+if len(bt_df) < 120:
+    st.write("Backtest ke liye kam data hai.")
+else:
+    eq, bh, trades = run_backtest(bt_df)
+    b1, b2, b3, b4 = st.columns(4)
+    b1.metric("Signal strategy", f"{eq.iloc[-1] - 100:+.1f}%")
+    b2.metric("Seedha kharid ke rakho", f"{bh.iloc[-1] - 100:+.1f}%")
+    b3.metric("Total trades", len(trades))
+    if trades:
+        wins = sum(1 for t in trades if t > 0)
+        b4.metric("Jeetne wale trades", f"{wins / len(trades) * 100:.0f}%")
+    else:
+        b4.metric("Jeetne wale trades", "NA")
+    bfig = go.Figure()
+    bfig.add_trace(go.Scatter(x=eq.index, y=eq, name="Signal strategy"))
+    bfig.add_trace(go.Scatter(x=bh.index, y=bh, name="Buy & Hold"))
+    bfig.update_layout(height=380, yaxis_title="Growth (start = 100)")
+    st.plotly_chart(bfig, use_container_width=True)
+    if eq.iloc[-1] < bh.iloc[-1]:
+        st.info("Is stock mein sirf kharid ke rakhna signal se behtar raha. Signal par andha bharosa mat karo.")
+    else:
+        st.success("Is stock mein signal ne kharid ke rakhne se behtar kaam kiya, par bhavishya mein aisa hona zaroori nahi.")
+
+st.caption("Demo dashboard. Sirf seekhne ke liye, paisa mat lagao.")
