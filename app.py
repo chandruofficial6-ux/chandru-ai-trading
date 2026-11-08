@@ -23,6 +23,10 @@ stocks = {
     "INFOSYS": "INFY.NS",
     "HDFC BANK": "HDFCBANK.NS",
     "SBI": "SBIN.NS",
+    "ITC": "ITC.NS",
+    "ICICI BANK": "ICICIBANK.NS",
+    "WIPRO": "WIPRO.NS",
+    "L&T": "LT.NS",
 }
 
 name = st.sidebar.selectbox("Stock / Index chuno", list(stocks.keys()))
@@ -147,7 +151,6 @@ try:
 except Exception:
     st.write("News load nahi hui, thodi der baad try karo.")
 
-st.caption("Demo dashboard. Seekhne ke liye hai, isse paisa mat lagao.")
 # ---------- Scanner ----------
 st.markdown("---")
 st.markdown("### 🔍 Market Scanner (saare stocks ek saath)")
@@ -180,18 +183,18 @@ def scan_all():
             else:
                 sg = "🟡 WAIT"
             if r > 70:
-                rz = "Overbought"
+                rz = "🔥 Overbought"
             elif r < 30:
-                rz = "Oversold"
+                rz = "🧊 Oversold"
             else:
                 rz = "Normal"
             rows.append({
                 "Stock": nm,
+                "Signal": sg,
                 "Price": round(p, 2),
                 "Change %": round((p - pv) / pv * 100, 2),
                 "RSI": round(r, 1),
                 "RSI Zone": rz,
-                "Signal": sg,
             })
         except Exception:
             continue
@@ -202,13 +205,25 @@ scan_df = scan_all()
 if scan_df.empty:
     st.write("Scanner data load nahi hua.")
 else:
-    st.dataframe(scan_df, hide_index=True, use_container_width=True)
-    # ---------- Alerts ----------
+    st.dataframe(
+        scan_df,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Price": st.column_config.NumberColumn("Price (₹)", format="%.2f"),
+            "Change %": st.column_config.NumberColumn("Change %", format="%+.2f%%"),
+            "RSI": st.column_config.ProgressColumn(
+                "RSI", format="%.1f", min_value=0, max_value=100),
+        },
+    )
+
+# ---------- Alerts ----------
 if not scan_df.empty:
     st.markdown("### 🚨 Alerts")
     hot = scan_df[scan_df["RSI"] > 70]
     cold = scan_df[scan_df["RSI"] < 30]
     buys = scan_df[scan_df["Signal"].str.contains("BUY")]
+    sells = scan_df[scan_df["Signal"].str.contains("SELL")]
 
     if not hot.empty:
         st.error("🔥 Overbought (girne ka risk): " + ", ".join(hot["Stock"]))
@@ -216,5 +231,38 @@ if not scan_df.empty:
         st.success("🧊 Oversold (bounce ka chance): " + ", ".join(cold["Stock"]))
     if not buys.empty:
         st.info("🟢 BUY signal: " + ", ".join(buys["Stock"]))
-    if hot.empty and cold.empty and buys.empty:
+    if not sells.empty:
+        st.warning("🔴 SELL signal: " + ", ".join(sells["Stock"]))
+    if hot.empty and cold.empty and buys.empty and sells.empty:
         st.write("Abhi koi khaas alert nahi hai.")
+
+# ---------- Comparison ----------
+st.markdown("---")
+st.markdown("### ⚖️ Stock Comparison")
+names = list(stocks.keys())
+c1, c2 = st.columns(2)
+a_name = c1.selectbox("Pehla stock", names, index=2, key="cmp_a")
+b_name = c2.selectbox("Doosra stock", names, index=3, key="cmp_b")
+
+if a_name == b_name:
+    st.warning("Do alag stocks chuno.")
+else:
+    da = load_data(stocks[a_name], period)["Close"]
+    db = load_data(stocks[b_name], period)["Close"]
+    both = pd.concat([da.rename(a_name), db.rename(b_name)], axis=1).dropna()
+    if both.empty:
+        st.write("Comparison data nahi mila.")
+    else:
+        norm = both / both.iloc[0] * 100
+        cfig = go.Figure()
+        for c in norm.columns:
+            cfig.add_trace(go.Scatter(x=norm.index, y=norm[c], name=c))
+        cfig.update_layout(height=400, yaxis_title="Growth (start = 100)")
+        st.plotly_chart(cfig, use_container_width=True)
+        ra = norm[a_name].iloc[-1] - 100
+        rb = norm[b_name].iloc[-1] - 100
+        k1, k2 = st.columns(2)
+        k1.metric(a_name, f"{ra:+.1f}%", help=f"{period} ka return")
+        k2.metric(b_name, f"{rb:+.1f}%", help=f"{period} ka return")
+
+st.caption("Demo dashboard. Seekhne ke liye hai, isse paisa mat lagao.")
