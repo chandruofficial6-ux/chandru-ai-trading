@@ -586,3 +586,45 @@ else:
         share = biggest["Abhi value (₹)"] / tot_val * 100 if tot_val else 0
         if share > 50:
             st.warning(f"{biggest['Stock']} tere portfolio ka {share:.0f}% hai. Ek hi stock mein zyada paisa risky hota hai.")
+            # ---------- Support / Resistance ----------
+st.markdown("---")
+st.markdown("### 🧱 Support / Resistance")
+st.caption(f"Stock: {name}. Support = neeche ka floor, Resistance = upar ki chhat (pichle swing high/low se).")
+
+sr_pick = st.selectbox("Kitne din dekhein", ["1 mahina", "3 mahine", "6 mahine"], index=1, key="sr_days")
+sr_n = {"1 mahina": 22, "3 mahine": 66, "6 mahine": 130}[sr_pick]
+sr_w = df.tail(sr_n)
+
+
+def swing_levels(w, p):
+    hi = w["High"]
+    lo = w["Low"]
+    sh = hi[hi == hi.rolling(7, center=True, min_periods=1).max()]
+    sl = lo[lo == lo.rolling(7, center=True, min_periods=1).min()]
+    below = sl[sl < p]
+    above = sh[sh > p]
+    sup = float(below.max()) if len(below) else float(lo.min())
+    res_ = float(above.min()) if len(above) else float(hi.max())
+    return sup, res_
+
+
+sr_sup, sr_res = swing_levels(sr_w, price)
+q1, q2, q3 = st.columns(3)
+q1.metric("Support", f"₹ {sr_sup:,.2f}", f"{(sr_sup - price) / price * 100:+.1f}% door")
+q2.metric("Abhi ka bhav", f"₹ {price:,.2f}")
+q3.metric("Resistance", f"₹ {sr_res:,.2f}", f"{(sr_res - price) / price * 100:+.1f}% door")
+
+srfig = go.Figure(go.Candlestick(
+    x=sr_w.index, open=sr_w["Open"], high=sr_w["High"],
+    low=sr_w["Low"], close=sr_w["Close"], name="Price"))
+srfig.add_hline(y=sr_sup, line_dash="dash", line_color="green", annotation_text="Support")
+srfig.add_hline(y=sr_res, line_dash="dash", line_color="red", annotation_text="Resistance")
+srfig.update_layout(height=450, xaxis_rangeslider_visible=False)
+st.plotly_chart(srfig, use_container_width=True)
+
+if price >= float(sr_w["High"].max()) * 0.998:
+    st.info("Price is period ke high ke paas hai, upar koi purani resistance nahi. Aise mein overbought ka dhyan rakho.")
+elif (price - sr_sup) < (sr_res - price):
+    st.info("Price support ke zyada paas hai. Yahan se bounce aa sakta hai, par support tut bhi sakta hai.")
+else:
+    st.info("Price resistance ke zyada paas hai. Yahan rukawat aa sakti hai, par breakout bhi ho sakta hai.")
