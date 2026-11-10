@@ -65,6 +65,7 @@ PAGES = [
     "🧪 Backtest & Strategy Lab",
     "💼 Paper Portfolio",
     "🎯 Option Chain (Seekhne ke liye)",
+    "🛢️ Commodity (Gold/Silver/Crude)",
 ]
 page = st.sidebar.radio("Page chuno", PAGES)
 
@@ -284,8 +285,8 @@ def compute_live(d, span):
     }
 
 
-def live_panel(name, iv, span):
-    sym = stocks[name]
+def live_panel(name, iv, span, sym=None, hours=True, cur="₹"):
+    sym = sym or stocks[name]
     try:
         raw = load_intraday(sym, "5d", iv)
     except Exception:
@@ -319,7 +320,7 @@ def live_panel(name, iv, span):
 
     if r["events"]:
         t, sg, p = r["events"][0]
-        st.info(f"Sabse naya signal: {sg} @ ₹{p:,.2f} ({t:%d %b %H:%M})")
+        st.info(f"Sabse naya signal: {sg} @ {cur}{p:,.2f} ({t:%d %b %H:%M})")
     else:
         st.info("Abhi tak koi naya BUY/SELL signal nahi aaya.")
 
@@ -347,10 +348,13 @@ def live_panel(name, iv, span):
                   annotation_text="Resistance")
     fig.add_hline(y=r["prev_close"], line_dash="dot", line_color="gray",
                   annotation_text="Pichla close")
-    fig.update_xaxes(rangebreaks=[
-        dict(bounds=["sat", "mon"]),
-        dict(bounds=[15.5, 9.25], pattern="hour"),
-    ])
+    if hours:
+        fig.update_xaxes(rangebreaks=[
+            dict(bounds=["sat", "mon"]),
+            dict(bounds=[15.5, 9.25], pattern="hour"),
+        ])
+    else:
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
     fig.update_layout(height=620, xaxis_rangeslider_visible=False,
                       margin=dict(l=10, r=10, t=30, b=10))
     st.plotly_chart(fig, use_container_width=True)
@@ -1013,6 +1017,91 @@ def page_option():
 
 
 # =====================================================================
+# PAGE 9: Commodity
+# =====================================================================
+COMMODITIES = {
+    "Gold": "GC=F",
+    "Silver": "SI=F",
+    "Crude Oil (WTI)": "CL=F",
+    "Brent Crude": "BZ=F",
+    "Natural Gas": "NG=F",
+    "Copper": "HG=F",
+}
+COMM_UNIT = {
+    "Gold": "USD/oz", "Silver": "USD/oz", "Crude Oil (WTI)": "USD/barrel",
+    "Brent Crude": "USD/barrel", "Natural Gas": "USD/mmBtu", "Copper": "USD/lb",
+}
+
+
+@st.cache_data(ttl=300)
+def usdinr():
+    try:
+        v = load_data("INR=X", "5d")
+        return float(v["Close"].iloc[-1])
+    except Exception:
+        return None
+
+
+def inr_estimate(name, usd, fx):
+    """MCX jaisa andaza (import duty/premium alag hota hai, isliye sirf approx)."""
+    if fx is None:
+        return None
+    if name == "Gold":
+        return usd * fx / 31.1035 * 10, "₹ / 10 gram"
+    if name == "Silver":
+        return usd * fx / 31.1035 * 1000, "₹ / kg"
+    if name in ("Crude Oil (WTI)", "Brent Crude"):
+        return usd * fx, "₹ / barrel"
+    if name == "Natural Gas":
+        return usd * fx, "₹ / mmBtu"
+    return None
+
+
+def page_commodity():
+    st.title("🛢️ Commodity (Gold / Silver / Crude)")
+    st.caption("Data international futures ka hai (Yahoo, USD mein). MCX ka bhav "
+               "import duty aur premium ki wajah se thoda alag hota hai. Sirf seekhne ke liye.")
+
+    fx = usdinr()
+    names = list(COMMODITIES)
+    cols = st.columns(len(names))
+    for col, nm in zip(cols, names):
+        try:
+            d = load_data(COMMODITIES[nm], "5d")
+            p = float(d["Close"].iloc[-1])
+            pv = float(d["Close"].iloc[-2])
+            col.metric(nm, f"{p:,.2f}", f"{(p - pv) / pv * 100:+.2f}%")
+        except Exception:
+            col.metric(nm, "NA")
+    if fx:
+        st.caption(f"USD/INR: ₹{fx:,.2f}")
+
+    pick = st.radio("Commodity chuno", names, horizontal=True, key="comm_pick")
+    c1, c2, c3 = st.columns(3)
+    iv = c1.selectbox("Candle", ["5m", "15m", "1m"], index=0, key="comm_iv")
+    span = c2.selectbox("Data", ["Aaj", "Pichle 5 din"], key="comm_span")
+    auto = c3.checkbox("🔄 Auto-refresh (har 60 sec)", value=True, key="comm_auto")
+
+    try:
+        dd = load_data(COMMODITIES[pick], "5d")
+        usd = float(dd["Close"].iloc[-1])
+        est = inr_estimate(pick, usd, fx)
+        if est:
+            st.info(f"🇮🇳 {pick} ka **rupaye mein andaza**: ₹{est[0]:,.0f} ({est[1]}). "
+                    f"Asli MCX bhav alag ho sakta hai. Unit: {COMM_UNIT[pick]}")
+    except Exception:
+        pass
+
+    panel = st.fragment(run_every=60 if auto else None)(live_panel)
+    panel(pick, iv, span, sym=COMMODITIES[pick], hours=False, cur="$")
+
+    st.markdown(f"### 📰 {pick}: taaza khabrein")
+    show_news(f"{pick} price MCX India", symbol=COMMODITIES[pick], limit=6)
+    st.info("Commodity bahut volatile hoti hai (leverage ke saath aur zyada). "
+            "Pehle Paper Portfolio pe practice karo.")
+
+
+# =====================================================================
 # Page router
 # =====================================================================
 PAGE_FUNCS = {
@@ -1024,5 +1113,6 @@ PAGE_FUNCS = {
     PAGES[5]: page_backtest,
     PAGES[6]: page_portfolio,
     PAGES[7]: page_option,
+    PAGES[8]: page_commodity,
 }
 PAGE_FUNCS[page]()
