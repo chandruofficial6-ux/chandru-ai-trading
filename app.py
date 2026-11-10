@@ -1,4 +1,8 @@
+import hashlib
+import hmac
 import math
+import secrets as pysecrets
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -51,10 +55,77 @@ NIFTY50 = [
 ]
 
 # =====================================================================
+# Login (admin = boss, viewer = dost). Users Streamlit "Secrets" mein hote hain.
+# =====================================================================
+def make_hash(pw, salt=None):
+    salt = salt or pysecrets.token_hex(8)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 100_000).hex()
+    return f"pbkdf2${salt}${h}"
+
+
+def check_hash(pw, stored):
+    try:
+        _, salt, h = str(stored).split("$")
+    except ValueError:
+        return False
+    c = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 100_000).hex()
+    return hmac.compare_digest(c, h)
+
+
+def get_users():
+    try:
+        raw = st.secrets["users"]
+        return {str(k).lower(): dict(v) for k, v in raw.items()}
+    except Exception:
+        return {}
+
+
+USERS = get_users()
+if USERS:
+    if not st.session_state.get("user"):
+        st.title("🔐 CHANDRU AI TRADING")
+        st.caption("Login karo. Naya user sirf admin (boss) bana sakta hai.")
+        with st.form("login_form"):
+            u_in = st.text_input("Username")
+            p_in = st.text_input("Password", type="password")
+            go_login = st.form_submit_button("Login")
+        if go_login:
+            fails = st.session_state.get("fails", 0)
+            if fails >= 5:
+                time.sleep(3)
+            rec = USERS.get(u_in.strip().lower())
+            if rec and check_hash(p_in, rec.get("password_hash", "")):
+                st.session_state["user"] = {
+                    "username": u_in.strip().lower(),
+                    "name": rec.get("name", u_in),
+                    "role": rec.get("role", "viewer"),
+                }
+                st.session_state["fails"] = 0
+                st.rerun()
+            else:
+                st.session_state["fails"] = fails + 1
+                st.error("Username ya password galat hai.")
+        st.info("Sirf seekhne ke liye. Isse real paise ka faisla mat lo.")
+        st.stop()
+    CURRENT = st.session_state["user"]
+else:
+    CURRENT = {"username": "open", "name": "Guest", "role": "admin"}
+IS_ADMIN = CURRENT["role"] == "admin"
+
+
+# =====================================================================
 # Sidebar: page chuno + watchlist
 # =====================================================================
 st.sidebar.title("🚀 CHANDRU AI TRADING")
 st.sidebar.caption("Smart Indian Market Analysis")
+if USERS:
+    st.sidebar.write(f"👤 {CURRENT['name']} ({CURRENT['role']})")
+    if st.sidebar.button("🚪 Logout"):
+        st.session_state["user"] = None
+        st.rerun()
+else:
+    st.sidebar.warning("🔓 Login abhi band hai (koi bhi khol sakta hai). "
+                       "Admin Panel mein dekho kaise chalu kare.")
 
 PAGES = [
     "🔴 Live Market",
@@ -67,6 +138,8 @@ PAGES = [
     "🎯 Option Chain (Seekhne ke liye)",
     "🛢️ Commodity (Gold/Silver/Crude)",
 ]
+if IS_ADMIN:
+    PAGES.append("👑 Admin Panel")
 page = st.sidebar.radio("Page chuno", PAGES)
 
 with st.sidebar.expander("➕ Apne stocks (watchlist)"):
@@ -1102,6 +1175,52 @@ def page_commodity():
 
 
 # =====================================================================
+# PAGE 10: Admin Panel (sirf boss)
+# =====================================================================
+def page_admin():
+    st.title("👑 Admin Panel")
+    if not IS_ADMIN:
+        st.error("Sirf admin ke liye.")
+        return
+    if USERS:
+        st.success(f"🔐 Login chalu hai. Total users: {len(USERS)}")
+        st.dataframe(
+            pd.DataFrame([{"Username": k, "Naam": v.get("name", ""),
+                           "Role": v.get("role", "viewer")}
+                          for k, v in USERS.items()]),
+            hide_index=True, use_container_width=True)
+    else:
+        st.warning("🔓 Abhi login band hai. Niche pehla admin user banao, "
+                   "phir Secrets mein daalo.")
+
+    st.subheader("➕ Naya user banao")
+    c1, c2 = st.columns(2)
+    uname = c1.text_input("Username (chhote letters, bina space)", key="adm_u")
+    dname = c2.text_input("Naam", key="adm_n")
+    c3, c4 = st.columns(2)
+    pw = c3.text_input("Password (kam se kam 8 akshar)", type="password", key="adm_p")
+    role = c4.selectbox("Role", ["viewer", "admin"], key="adm_r")
+    uname_c = uname.strip().lower()
+    if uname_c and not uname_c.replace("_", "").isalnum():
+        st.error("Username mein sirf letters, numbers ya _ rakho.")
+    elif uname_c and len(pw) >= 8:
+        block = (f"[users.{uname_c}]\n"
+                 f"name = \"{dname.strip() or uname_c}\"\n"
+                 f"role = \"{role}\"\n"
+                 f"password_hash = \"{make_hash(pw)}\"\n")
+        st.write("Ye poora block copy karo:")
+        st.code(block, language="toml")
+        st.markdown(
+            "**Secrets mein daalne ke steps:**\n"
+            "1. share.streamlit.io → apne app ke saamne **⋮ → Settings → Secrets**\n"
+            "2. Box mein ye block **paste** karo (purane users ke niche)\n"
+            "3. **Save** dabao, app 1 minute mein restart hoga\n"
+            "4. Naye user ko username aur password bhej do")
+    st.caption("Password app mein save nahi hota, sirf uska hash banta hai. "
+               "User hatana ho to Secrets se uska block delete karo.")
+
+
+# =====================================================================
 # Page router
 # =====================================================================
 PAGE_FUNCS = {
@@ -1114,5 +1233,6 @@ PAGE_FUNCS = {
     PAGES[6]: page_portfolio,
     PAGES[7]: page_option,
     PAGES[8]: page_commodity,
+    "👑 Admin Panel": page_admin,
 }
 PAGE_FUNCS[page]()
