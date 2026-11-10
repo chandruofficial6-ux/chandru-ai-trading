@@ -1,3 +1,4 @@
+import math
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -63,6 +64,7 @@ PAGES = [
     "⚖️ Compare",
     "🧪 Backtest & Strategy Lab",
     "💼 Paper Portfolio",
+    "🎯 Option Chain (Seekhne ke liye)",
 ]
 page = st.sidebar.radio("Page chuno", PAGES)
 
@@ -866,6 +868,151 @@ def page_portfolio():
 
 
 # =====================================================================
+# PAGE 8: Option Chain (estimate, sirf seekhne ke liye)
+# =====================================================================
+def _ncdf(x):
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def bs_price(spot, strike, t, vol, kind, r=0.065):
+    """Black-Scholes premium + delta (estimate)."""
+    t = max(t, 1e-4)
+    vol = max(vol, 0.01)
+    d1 = (math.log(spot / strike) + (r + vol * vol / 2) * t) / (vol * math.sqrt(t))
+    d2 = d1 - vol * math.sqrt(t)
+    if kind == "CE":
+        p = spot * _ncdf(d1) - strike * math.exp(-r * t) * _ncdf(d2)
+        delta = _ncdf(d1)
+    else:
+        p = strike * math.exp(-r * t) * _ncdf(-d2) - spot * _ncdf(-d1)
+        delta = _ncdf(d1) - 1
+    return max(p, 0.05), delta
+
+
+@st.cache_data(ttl=300)
+def load_vix():
+    try:
+        v = load_data("^INDIAVIX", "5d")
+        return float(v["Close"].iloc[-1])
+    except Exception:
+        return 14.0
+
+
+def page_option():
+    st.title("🎯 Option Chain (Seekhne ke liye)")
+    st.warning(
+        "⚠️ Ye **LIVE option chain nahi hai**. Premium **Black-Scholes se andaza** "
+        "(estimate) hai, spot price + India VIX se. Asli bhav broker app mein dekho. "
+        "Ye page sirf seekhne ke liye hai, real paise ke decision ke liye nahi."
+    )
+
+    c1, c2, c3 = st.columns(3)
+    nm = c1.selectbox("Index", INDICES, key="opt_idx")
+    dte = c2.selectbox("Expiry me kitne din bache?", [1, 2, 3, 5, 7, 10, 14, 21, 30],
+                       index=3, key="opt_dte")
+    step_default = {"NIFTY 50": 50, "BANK NIFTY": 100, "SENSEX": 100}[nm]
+    lot_default = {"NIFTY 50": 65, "BANK NIFTY": 30, "SENSEX": 20}[nm]
+    vix = load_vix()
+    iv_pct = c3.number_input("IV % (VIX se liya, badal sakte ho)", 5.0, 80.0,
+                             round(vix, 1), 0.5, key="opt_iv")
+    lot = st.number_input("Lot size (broker se confirm karo)", 1, 5000, lot_default,
+                          key="opt_lot")
+
+    try:
+        raw = load_intraday(stocks[nm], "5d", "5m")
+        r = compute_live(raw, "Aaj")
+    except Exception as e:
+        st.error(f"Data nahi aaya: {e}")
+        return
+
+    d = r["d"]
+    spot = r["ltp"]
+    sup, res_ = r["sup"], r["res"]
+    e9 = float(d["EMA9"].iloc[-1])
+    e21 = float(d["EMA21"].iloc[-1])
+    bull = e9 > e21
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Spot (5m close)", f"{spot:,.2f}")
+    m2.metric("Support", f"{sup:,.0f}")
+    m3.metric("Resistance", f"{res_:,.0f}")
+    m4.metric("India VIX", f"{vix:.1f}")
+
+    step = step_default
+    atm = round(spot / step) * step
+    t = dte / 365.0
+    vol = iv_pct / 100.0
+
+    rows = []
+    for k in range(-5, 6):
+        stk = atm + k * step
+        ce, cd = bs_price(spot, stk, t, vol, "CE")
+        pe, pdl = bs_price(spot, stk, t, vol, "PE")
+        rows.append({
+            "Strike": int(stk),
+            "CE premium": round(ce, 1),
+            "CE delta": round(cd, 2),
+            "PE premium": round(pe, 1),
+            "PE delta": round(pdl, 2),
+            "Type": "ATM" if k == 0 else ("CE ITM" if k < 0 else "PE ITM"),
+        })
+    chain = pd.DataFrame(rows)
+
+    st.subheader("🧭 Signal ke hisab se idea (seekhne ke liye)")
+    last_ev = r["events"][0] if r["events"] else None
+    if last_ev:
+        st.caption(f"Aakhri cross: {last_ev[1]} @ {last_ev[2]:,.1f} "
+                   f"({last_ev[0].strftime('%d %b %H:%M')})")
+
+    near_res = (res_ - spot) / spot < 0.0015
+    near_sup = (spot - sup) / spot < 0.0015
+    if bull and not near_res:
+        kind, why = "CE", "EMA9 > EMA21 (tezi), price resistance se thoda door"
+    elif (not bull) and not near_sup:
+        kind, why = "PE", "EMA9 < EMA21 (mandi), price support se thoda door"
+    else:
+        kind, why = None, "Price support/resistance ke bahut paas hai. Wait karna behtar."
+
+    if kind is None:
+        st.info(f"⏸️ **Abhi wait**: {why}")
+    else:
+        stk = atm
+        prem, dl = bs_price(spot, stk, t, vol, kind)
+        sl_p = prem * 0.75
+        tg_p = prem * 1.40
+        icon = "🟢" if kind == "CE" else "🔴"
+        st.success(f"{icon} **{nm} {int(stk)} {kind}** (ATM) ke baare mein seekho: {why}")
+        a1, a2, a3, a4 = st.columns(4)
+        a1.metric("Andaza premium", f"₹{prem:,.1f}")
+        a2.metric("Stop-loss (-25%)", f"₹{sl_p:,.1f}")
+        a3.metric("Target (+40%)", f"₹{tg_p:,.1f}")
+        a4.metric("1 lot ka paisa", f"₹{prem * lot:,.0f}")
+        max_loss = (prem - sl_p) * lot
+        brk = stk + prem if kind == "CE" else stk - prem
+        st.write(f"- Breakeven (expiry pe): **{brk:,.0f}**")
+        st.write(f"- SL pe ek lot ka nuksaan: **₹{max_loss:,.0f}**. "
+                 "Ye capital ke 1-2% se zyada nahi hona chahiye.")
+        if kind == "CE":
+            st.write(f"- Index {sup:,.0f} (support) ke neeche band ho to idea galat.")
+        else:
+            st.write(f"- Index {res_:,.0f} (resistance) ke upar band ho to idea galat.")
+        if dte <= 1:
+            st.error("Expiry bahut paas hai. Premium bahut tezi se girta hai, zyada risky.")
+
+    st.subheader("📋 Option chain (andaza)")
+    def hl(row):
+        return ["background-color: #fff3cd; color: #000" if row["Type"] == "ATM" else ""
+                for _ in row]
+    st.dataframe(chain.style.apply(hl, axis=1), hide_index=True,
+                 use_container_width=True)
+    st.caption("CE = Call (tezi pe), PE = Put (mandi pe). Delta = index 1 point badle to "
+               "premium kitna badlega. Asli premium bid-ask, demand aur IV ki wajah se "
+               "alag hoga.")
+    st.info("📚 Yaad rakho: SEBI data ke hisab se 90% se zyada retail F&O trader "
+            "paisa ganwate hain. Pehle Paper Portfolio pe practice karo.")
+
+
+# =====================================================================
 # Page router
 # =====================================================================
 PAGE_FUNCS = {
@@ -876,5 +1023,6 @@ PAGE_FUNCS = {
     PAGES[4]: page_compare,
     PAGES[5]: page_backtest,
     PAGES[6]: page_portfolio,
+    PAGES[7]: page_option,
 }
 PAGE_FUNCS[page]()
